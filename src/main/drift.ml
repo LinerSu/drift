@@ -8,12 +8,19 @@ open Parser
 open Printer
 
 let x = "x"
+
 let y = "y"
+
 let f = "f"
+
 let g = "g"
+
 let r = "r"
+
 let dec = "dec"
+
 let id = "id"
+
 let loop = "loop"
 
 (* let test_1 = mk_lets [id, mk_lambda x (mk_var x)]
@@ -354,39 +361,43 @@ let main = insert (Node (2,Empty,Empty)) 1
 
  *)
 
-let tests = [ ]
-  
+let tests = []
+
 let _ =
   try
-    Config.parse;
-    Printexc.record_backtrace !Config.bt;
-    let t = if !Config.parse_file then 
-      begin
-        pre_vars := VarDefMap.empty;
-        thresholdsSet := ThresholdsSetType.empty;
-        [parse_from_file !Config.file]
-      end
-    else tests in
+    Config.parse ;
+    Printexc.record_backtrace !Config.bt ;
+    let t =
+      if !Config.parse_file then (
+        pre_vars := VarDefMap.empty ;
+        thresholdsSet := ThresholdsSetType.empty ;
+        [parse_from_file !Config.file] )
+      else tests
+    in
     (* print_dt Format.std_formatter !parsed_dt; *)
     (* pr_pre_def_vars Format.std_formatter; *)
-    List.iter (fun e -> 
-      let el = e |> label in
-      if !out_put_level < 2 then
-        (print_endline "Executing:";
-         print_exp stdout el);
-      print_endline "\n";
-      print_endline ("Domain specification: " ^ !Config.domain);
-      print_endline "\n";
-      (* exit 0; *)
-      ignore (s el);
-      if !out_put_level < 2 then
-        print_exp stdout el;
-      print_newline ()) t;
+    List.iter
+      (fun e ->
+        let el = e |> label in
+        if !out_put_level < 2 then (
+          print_endline "Executing:" ;
+          print_exp stdout el ) ;
+        print_endline "\n" ;
+        print_endline ("Domain specification: " ^ !Config.domain) ;
+        print_endline "\n" ;
+        (* exit 0; *)
+        ignore (s el) ;
+        if !out_put_level < 2 then print_exp stdout el ;
+        print_newline () )
+      t ;
     if !Config.debug then print_measures ()
   with
-  | Sys_error s | Failure s -> 
+  | Sys_error s | Failure s ->
       let bs = if !Config.debug then Printexc.get_backtrace () else "" in
-      output_string stderr ("Fatal Error: " ^ s ^ "\n" ^ bs); exit 1
+      output_string stderr ("Fatal Error: " ^ s ^ "\n" ^ bs) ;
+      exit 1
   | e ->
       let bs = if !Config.debug then Printexc.get_backtrace () else "" in
-      output_string stderr ("Fatal Error: " ^ Printexc.to_string e ^ "\n" ^ bs); exit 1
+      output_string stderr
+        ("Fatal Error: " ^ Printexc.to_string e ^ "\n" ^ bs) ;
+      exit 1
