@@ -10,6 +10,7 @@ type relation_t = Int of AbstractValue.t
   | Bool of AbstractValue.t * AbstractValue.t
   | Unit of unit
 type array_t = (var * var) * (relation_t * relation_t)
+type own_t = float
 
 module type HashType =
   sig
@@ -56,18 +57,6 @@ module MakeHash(Hash: HashType) = struct
 end
 
 exception Pre_Def_Change of string
-exception Key_not_found of string
-
-module TempVarMap =  Map.Make(struct
-  type t = var
-  let compare = compare
-  end)
-
-module VarMap = struct
-  include TempVarMap
-  let find key m = try TempVarMap.find key m 
-    with Not_found -> raise (Key_not_found (key^" is not Found in VarMap"))
-end
 
 module TempENodeMap = Map.Make(struct
   type t = stack_t
@@ -96,8 +85,12 @@ module type SensitiveSemanticsType =
       | Ary of array_t
       | Lst of list_t
       | Tuple of tuple_t
+      | Variant of variant_t
+      | Ref of ref_t
     and list_t = (var * var) * (relation_t * value_t)
     and tuple_t = value_t list
+    and variant_t = var * value_t list
+    and ref_t = value_t * own_t
     val init_T: (var * loc) -> table_t
     val alpha_rename_T: (value_t -> string -> string -> value_t) -> table_t -> string -> string -> table_t
     val join_T: (value_t -> value_t -> value_t) -> (value_t -> string -> string -> value_t) -> table_t -> table_t -> table_t
@@ -146,9 +139,13 @@ module NonSensitive: SensitiveSemanticsType =
       | Ary of array_t
       | Lst of list_t
       | Tuple of tuple_t
+      | Variant of variant_t
+      | Ref of ref_t
     and table_t = var * value_t * value_t
     and list_t = (var * var) * (relation_t * value_t)
     and tuple_t = value_t list
+    and variant_t = var * value_t list
+    and ref_t = value_t * own_t
     type call_site = None (* Not used *)
     let init_T (var, _) = var, Bot, Bot
     let alpha_rename_T (f: value_t -> string -> string -> value_t) (t:table_t) (prevar:string) (var:string) :table_t = 
@@ -262,9 +259,13 @@ module OneSensitive: SensitiveSemanticsType =
       | Ary of array_t
       | Lst of list_t
       | Tuple of tuple_t
+      | Variant of variant_t
+      | Ref of ref_t
     and table_t = (value_t * value_t) TableMap.t
     and list_t = (var * var) * (relation_t * value_t)
     and tuple_t = value_t list
+    and variant_t = var * value_t list
+    and ref_t = value_t * own_t
     let init_T var = TableMap.empty
     let alpha_rename_T f (mt:table_t) (prevar:string) (var:string) = TableMap.map (fun (vi, vo) -> 
       f vi prevar var, f vo prevar var) mt
@@ -409,6 +410,7 @@ end
 
 type exec_map_t = SenSemantics.value_t NodeMap.t
 
+type alias_t = (VarSet.t) VarMap.t
 
 (* module type SensitiveSemanticsType =
   sig

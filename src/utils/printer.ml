@@ -74,6 +74,19 @@ let rec pr_exp pl ppf = function
     (pr_exp pl) e
     (pr_pm pl) patlst
     (pr_label pl) l
+| DataTyp (name, tag, ep, l) ->
+  (match ep with
+  | Some e -> Format.fprintf ppf "@[<3>(%s@ %a)%a@]"
+    tag (pr_exp pl) e
+    (pr_label pl) l
+  | None -> Format.fprintf ppf "@[<2>(%s)%a@]"
+    tag (pr_label pl) l)
+| Ptr (e, l) -> Format.fprintf ppf "@[<2>(ref %a)%a@]"
+  (pr_exp pl) e
+  (pr_label pl) l
+| DeRef (e, l) -> Format.fprintf ppf "@[<2>(* %a)%a@]"
+  (pr_exp pl) e
+  (pr_label pl) l
 and pr_pm pl ppf = function
   | [] -> ()
   | [c] -> Format.fprintf ppf "%a" (pr_pattern pl) c
@@ -100,10 +113,16 @@ let pr_agg_val ppf a = match a with
   | Int v -> Format.fprintf ppf "@[<1>@ %a@ @]" AbstractValue.print_abs v
   | Unit u -> Format.fprintf ppf "@[<1>Unit@]"
 
-
 let pr_ary ppf ary = 
   let (l,e), (rl, ve) = ary in
   Format.fprintf ppf "@[<1>{@ cur_v:@ Int Array (%s, %s)@ |@ len:@ %a,@ item:@ %a@ }@]" l e pr_agg_val rl pr_agg_val ve
+
+let string_of_ownership own = 
+  if own = 0.0 then "Ref^0"
+  else if own = 1.0 then "Ref^1"
+  else Format.sprintf "Ref^%.1f" own
+
+let print_nothing ppf _ = Format.fprintf ppf ""
 
 let rec shape_value = function
   | Bot -> "Bot"
@@ -123,6 +142,18 @@ let rec shape_value = function
       shape_tuple u
   | Ary _ -> "Array"
   | Lst _ -> "List"
+  | Variant (tag, _) -> tag
+  | Ref (ref, own) -> string_of_ownership own
+
+let rec pr_value_name ppf= function
+  | _, Bot -> Format.fprintf ppf "_|_"
+  | _, Top -> Format.fprintf ppf "T"
+  | dep_name, Relation r -> pr_relation_name ppf (dep_name, r)
+  | _ -> ()
+and pr_relation_name ppf = function
+  | dep_name, Bool (vt, vf) -> Format.fprintf ppf "@[<1>{@ %s:@ Bool@ |@ TRUE:@ %a,@ FALSE:@ %a@ }@]" dep_name AbstractValue.print_abs vt AbstractValue.print_abs vf
+  | dep_name, Int v -> Format.fprintf ppf "@[<1>{@ %s:@ Int@ |@ %a@ }@]" dep_name AbstractValue.print_abs v
+  | dep_name, Unit u -> Format.fprintf ppf "@[<1>Unit@]"
 
 let rec pr_value ppf v = match v with
   | Bot -> Format.fprintf ppf "_|_"
@@ -132,6 +163,8 @@ let rec pr_value ppf v = match v with
   | Tuple u -> pr_tuple ppf u
   | Ary ary -> pr_ary ppf ary
   | Lst lst -> pr_lst ppf lst
+  | Variant v -> pr_variant ppf v
+  | Ref ref -> pr_ref ppf ref
 and pr_lst ppf lst =
     let (l,e), (rl, ve) = lst in
     Format.fprintf ppf "@[<1>{@ cur_v:@ %s List (%s, %s)@ |@ len:@ %a,@ item:@ %a@ }@]" (shape_value ve) l e pr_agg_val rl pr_value ve
@@ -144,6 +177,25 @@ and pr_tuple ppf u =
     | hd :: tl -> 
     Format.fprintf ppf "@[<1>%a,@ %a @]" pr_value hd print_list tl in
     print_list ppf u
+and pr_variant_tuple ppf u = 
+  let idx = ref 0 in
+  let rec print_list ppf = function
+    | [] -> ()
+    | [it] -> let name, dp = get_var_dep !idx in
+      Format.fprintf ppf "@[<1> %s %a @]" name pr_value_name (dp, it)
+    | hd :: tl -> let name, dp = get_var_dep !idx in
+      idx := !idx + 1 ;
+      Format.fprintf ppf "@[<1> %s %a,@ %a @]" name pr_value_name (dp, hd) print_list tl
+  in
+  print_list ppf u
+and pr_variant ppf v = 
+  let tag, u = v in
+  let name, _ = find_dtname_by_tag tag in
+  Format.fprintf ppf "@[<1>{@ cur_v:@ %s@ %s@ | " name tag;
+    if List.length u = 0 then Format.fprintf ppf "@ }@]" else
+    Format.fprintf ppf "@ %a }@]" pr_variant_tuple u
+and pr_ref ppf (v, own) = Format.fprintf ppf "%a@ %s@ " pr_value v (string_of_ownership own)
+
 
 let sort_list (m: exec_map_t) =
   let comp s1 s2 =
@@ -212,3 +264,39 @@ let print_node_by_label m l =
   with Failure s -> ()
   in
   Format.fprintf Format.std_formatter "%a@?" pr_map_nst_node m
+
+let print_pred ppf = function
+  | True -> Format.fprintf ppf "True" 
+  | False -> Format.fprintf ppf "True" 
+  | Exp exp -> 
+    let rec print_mul_term ppf = function
+    | Single t -> pr_exp true ppf t
+    | And (t, lst) -> pr_exp true ppf t; Format.fprintf ppf " and "; print_mul_term ppf lst
+    | Or (t, lst) -> pr_exp true ppf t; Format.fprintf ppf " or "; print_mul_term ppf lst
+    in print_mul_term ppf exp
+
+let print_type_pred ppf pred = 
+  VarMap.iter (fun k v -> 
+    let name_var, dp_var, type_ref, pred = v in
+    Format.fprintf ppf "%s: {%s: %s | %a }" name_var dp_var type_ref print_pred pred) pred
+
+let rec print_type_spec ppf = function
+  | [] -> ()
+  | [var, pred] -> Format.fprintf ppf "%s /*%a*/" var print_type_pred pred
+  | (var, pred) :: lst -> Format.fprintf ppf "%s /*%a*/ * %a" var print_type_pred pred print_type_spec lst
+
+let rec print_type_seq ppf = function 
+  | [] -> ()
+  | [(tag, spec)] -> (match spec with
+    | Nothing pred -> Format.fprintf ppf "%s /*%a*/" tag print_type_pred pred
+    | Just lst' -> Format.fprintf ppf "%s of %a" tag print_type_spec lst')
+  | (tag, spec) :: l -> match spec with
+    | Nothing pred -> Format.fprintf ppf "%s /*%a*/ | %a" tag print_type_pred pred print_type_seq l
+    | Just lst' -> Format.fprintf ppf "%s of %a | %a" tag print_type_spec lst' print_type_seq l
+
+let print_dt ppf (n, pred, lst) = Format.fprintf ppf "%s /*%a*/ = %a" n print_type_pred pred print_type_seq lst
+
+let rec print_int_list = function
+  | [] -> ()
+  | [it] -> Format.printf "%d\n" it
+  | hd :: tl -> Format.printf "%d, " hd; print_int_list tl

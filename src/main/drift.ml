@@ -298,9 +298,6 @@ f lst1 lst2"
      (lambda l2^24. ((List.hd^25 l2^26)^27 - (List.hd^28 l1^29)^30)^31)^32)^33)^34
  *)
 
-let pair_test_1 = parse_from_string
-"1, 2"
-
 let unary_minus_test = parse_from_string
 "let a = 3 in
 let b = -a in
@@ -310,9 +307,54 @@ let rec_test = parse_from_string
 "let rec f g a = if a = 3 then a else f g (g a) in
 (*let b = g a in f g b*)
 let add x = x + 1 in f add 0"
+
+
+let pair_test_1 = parse_from_string
+"1, 2"
+
+let dt_test_1 = parse_from_string
+"let mc i =
+	match i with
+	| Int x -> true
+	| Bool s -> s in
+  mc (Bool false)"
+  
+let ptr_test_1 = parse_from_string "let i = ref 2 in !i"
+
+let ptr_test_2 = parse_from_string
+" let a = ref 2 in 
+  a := !a + 1; !a"
+
+let ptr_test_3 = parse_from_string
+" let x = ref 5 in 
+  let y = x in
+  y := 4; assert(!y = !x)"
+
+let ptr_test_4 = parse_from_string
+" let x = ref 0 in 
+  let y = x in
+  x:= 1; y := 2; assert(!y = !x)"
+
+
+
+ let dt_test_2 = parse_from_string
+"type bstree =
+  | Empty
+  | Node of int * bstree * bstree
+
+let rec insert t i =
+   match t with
+    | Empty -> Node (i,Empty,Empty)
+    | Node (i',l,r) ->
+        if (i < i') then Node (i',insert l i,r)
+        else Node (i',l,insert r i)
+
+let main = insert (Node (2,Empty,Empty)) 1
+"
+
  *)
 
-let tests = []
+let tests = [ ]
   
 let _ =
   try
@@ -325,8 +367,10 @@ let _ =
         [parse_from_file !Config.file]
       end
     else tests in
+    (* print_dt Format.std_formatter !parsed_dt; *)
+    (* pr_pre_def_vars Format.std_formatter; *)
     List.iter (fun e -> 
-      let el = e |> simplify |> label in
+      let el = e |> label in
       if !out_put_level < 2 then
         (print_endline "Executing:";
          print_exp stdout el);

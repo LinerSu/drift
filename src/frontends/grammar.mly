@@ -28,27 +28,39 @@ let convert_var_name_apron_not_support s =
     restr
   else s
 
+let cap_var s = 
+  if String.length s > 0 then
+    let c = String.sub s 0 1 in
+    let c' = String.capitalize_ascii c in
+    String.equal c c'
+  else false
+
+
 %}
 /* declarations */
 /* let final_call_name = function
   | Var (x, _) -> x = "main"
   | _ -> false */
 
-%token <string> IDENT
+%token <string> CAPIDENT
+%token <string> UNCAPIDENT
 %token <int> INTCONST
 %token <bool> BOOLCONST
+%token <bool> BOOLPRED
 %token EMPTYLST
 %token LPAREN RPAREN
 %token PLUS MINUS DIV TIMES MOD
 %token EQ NE LE GE LT GT
 %token EOF
-%token AND OR
-%token ARROW CONS BAR 
+%token AND OR ANDTK ORTK
+%token ARROW CONS BAR LBRKT RBRKT
 %token SEMI COLON COMMA LSQBR RSQBR LARYBR RARYBR
 %token IF ELSE THEN FUN LET REC IN ASSERT MATCH WITH
-%token BEGIN END        
-%token TYPE
+%token BEGIN END TYPEKEY OF
+%token <string> TYPE
+%token REF EXCLAM
 %token <Syntax.pre_exp> PRE
+%token <Syntax.pre_exp> INVAR
 
 /* 
 This block comment is Copyright (©) 1996-present, Institut National de Recherche en Informatique et en Automatique. 
@@ -81,6 +93,10 @@ The precedences must be listed from low to high.
 %nonassoc THEN
 %nonassoc ELSE
 %left BAR
+%nonassoc below_LPAREN
+%nonassoc LPAREN
+%nonassoc below_LSQBR
+%nonassoc LSQBR
 
 %start main
 %type <Syntax.term> main
@@ -124,9 +140,14 @@ basic_term: /*term@7 := int | bool | [] | var | (term)*/
 | EMPTYLST { Const (IntList [], "") }
 | LSQBR int_list RSQBR { Const (IntList $2, "") }
 | LARYBR int_ary RARYBR { Const (IntList [], "") } /*TODO: Implement this*/
-| IDENT { 
+| UNCAPIDENT { 
   let res_str = convert_var_name_apron_not_support $1 in 
   Var (res_str, "") }
+| CAPIDENT %prec below_LPAREN { 
+  let tag, specs = find_dtname_by_tag $1 in
+  DataTyp(tag, $1, None, "") }
+| REF basic_term { Ptr ($2, "") } /*pointer creation*/
+| EXCLAM basic_term { DeRef ($2, "") } /*pointer deref*/
 | LPAREN seq_term RPAREN { $2 } /*Parentheses*/
 | BEGIN seq_term END { $2 } /*begin/end blocks*/
 ;
@@ -219,8 +240,15 @@ tuple_term:
 | tuple_term2 { TupleLst ($1, "") }
 ;
 
-%inline if_term_:
+datatyp_term:
 | tuple_term { $1 }
+| CAPIDENT LPAREN tuple_term RPAREN  { 
+  let tag, specs = find_dtname_by_tag $1 in
+  DataTyp(tag, $1, Some ($3), "") }
+;
+
+%inline if_term_:
+| datatyp_term { $1 }
 | IF seq_term THEN term {
   let loc = None |> construct_asst in
   let else_term = Const (UnitLit, "") in
@@ -237,14 +265,93 @@ lambda_term:
 ;
 
 let_in_term:
-| LET REC IDENT param_list_opt EQ seq_term IN seq_term {
+| LET REC UNCAPIDENT param_list_opt EQ seq_term IN term {
   let res_str = convert_var_name_apron_not_support $3 in
   let fn = mk_lambdas $4 $6 in
   mk_let_rec_in res_str fn $8
 }
-| LET param_list EQ seq_term IN seq_term {
+| LET param_list EQ seq_term IN term {
   let fn = mk_lambdas (List.tl $2) $4 in
   mk_let_in (List.hd $2) fn $6
+}
+;
+
+pred_cond_op:
+| ANDTK { And }
+| ORTK { Or }
+;
+
+pred_exp:
+| comp_term { Single $1 }
+| comp_term pred_cond_op pred_exp {
+  if is_conjunc_op $2 then And ($1, $3)
+  else Or ($1, $3)
+}
+;
+
+pred_type:
+| BOOLPRED { if $1 then True else False }
+| pred_exp { Exp ($1) }
+;
+
+pred_ref:
+| UNCAPIDENT COLON LBRKT UNCAPIDENT COLON CAPIDENT BAR pred_type RBRKT {
+  (* depth: {dp: type | predicate } *)
+  $1, $4, $6, $8
+}
+;
+
+predicate:
+| pred_ref { 
+  let name_var, dp_var, type_ref, pred = $1 in
+  VarMap.empty |> VarMap.add name_var $1
+ }
+| pred_ref COMMA predicate { 
+  let name_var, dp_var, type_ref, pred = $1 in
+  $3 |> VarMap.add name_var $1
+}
+;
+
+(*<:item: {v: Int | true } *)
+(*<:{v: bstree | depth: {ldp: Int | true }, value: {lval: Int | true }}*)
+ref_type:
+| pred_ref { let name_var, dp_var, type_ref, pred = $1 in 
+  VarMap.add name_var $1 VarMap.empty }
+| LBRKT UNCAPIDENT COLON UNCAPIDENT BAR predicate RBRKT { $6 }
+;
+
+var_pattern:
+| %prec below_LSQBR { VarMap.empty }
+| LSQBR TIMES LT COLON ref_type TIMES RSQBR { $5 }
+;
+
+type_exp:
+| UNCAPIDENT var_pattern { [$1, $2] }
+| TYPE var_pattern { [$1, $2] }
+| UNCAPIDENT var_pattern TIMES type_exp { ($1, $2) :: $4 }
+| TYPE var_pattern TIMES type_exp { ($1, $2) :: $4 }
+;
+
+(* Add type specification *)
+type_spec:
+| CAPIDENT var_pattern { $1, Nothing $2 }
+| CAPIDENT OF type_exp { $1, Just $3}
+;
+
+type_seq:
+| type_spec { [$1] }
+| type_spec BAR type_seq { $1 :: $3 }
+;
+
+type_term:
+| TYPEKEY UNCAPIDENT var_pattern EQ type_seq { parsed_dt := $2, $3, $5 }
+| TYPEKEY UNCAPIDENT var_pattern EQ BAR type_seq { parsed_dt := $2, $3, $6 }
+;
+
+assign_term:
+| basic_term COLON EQ term SEMI seq_term {
+  let new_ref = Ptr ($4, "") in 
+  mk_let_in $1 new_ref $6
 }
 ;
 
@@ -253,16 +360,18 @@ term:
 | lambda_term { $1 }
 | let_in_term { $1 }
 | match_term { $1 }
+| assign_term { $1 }
 ;
 
 seq_term:
 | term %prec below_SEMI { $1 }
+| type_term seq_term { $2 }
 | term SEMI seq_term { (*mk_let_in (Var ("_", "")) $1 $3*) BinOp (Seq, $1, $3, "")  }
 ;
 
   
 let_val:
-| LET REC IDENT param_list_opt EQ seq_term {
+| LET REC UNCAPIDENT param_list_opt EQ seq_term {
   let fn = mk_lambdas $4 $6 in
   let res_str = convert_var_name_apron_not_support $3 in
   true, Var (res_str, ""), fn, $4
@@ -271,6 +380,12 @@ let_val:
   let fn = mk_lambdas (List.tl $2) $4 in
   false, (List.hd $2), fn, (List.tl $2)
 }
+| LET REC UNCAPIDENT param_list_opt INVAR EQ seq_term {
+  let fn = mk_lambdas $4 $7 in
+  let res_str = convert_var_name_apron_not_support $3 in
+  pre_vars := VarDefMap.add res_str $5 !pre_vars;
+  true, Var (res_str, ""), fn, $4
+}
 ;
 
 /*
@@ -278,6 +393,7 @@ let main (x(*-: {v: int | true}*)) = x
 <=> let main x = x in main prefx
 */
 let_vals:
+| type_term let_vals { $2 }
 | let_val let_vals {
   let rc, p, def, lst = $1 in
   match p, $2 with
@@ -296,14 +412,19 @@ basic_pattern:
 | MINUS INTCONST { if abs $2 < 1000 then thresholdsSet := ThresholdsSetType.add (-$2) !thresholdsSet; Const (Integer (-$2), "") }
 | BOOLCONST { Const (Boolean $1, "") }
 | EMPTYLST { Const (IntList [], "") }
-| IDENT { 
+| UNCAPIDENT {
   let res_str = convert_var_name_apron_not_support $1 in 
   Var (res_str, "") }
+| CAPIDENT { let tag, specs = find_dtname_by_tag $1 in DataTyp(tag, $1, None, "") }
 | LPAREN pattern RPAREN { $2 }
 ;
     
 pattern:
 | basic_pattern { $1 }
+| CAPIDENT basic_pattern { 
+  let tag, specs = find_dtname_by_tag $1 in
+  DataTyp(tag, $1, Some ($2), "")
+}
 | basic_pattern COLON TYPE PRE {
   match $1 with
   | Var (x, _) ->
@@ -316,6 +437,22 @@ pattern:
   match $1 with
   | Var (x, _) ->
       pre_vars := VarDefMap.add ("pref" ^ x) $2 !pre_vars; $1
+  | _ ->
+      let loc =  mklocation (Parsing.rhs_start_pos 1) (Parsing.rhs_end_pos 2) in
+      fail loc "Syntax error" 
+  }
+| basic_pattern COLON TYPE INVAR {
+  match $1 with
+  | Var (x, _) ->
+      pre_vars := VarDefMap.add x $4 !pre_vars; $1
+  | _ ->
+      let loc = mklocation (Parsing.rhs_start_pos 1) (Parsing.rhs_end_pos 4) in
+      fail loc "Syntax error" 
+  }
+| basic_pattern INVAR {
+  match $1 with
+  | Var (x, _) ->
+      pre_vars := VarDefMap.add x $2 !pre_vars; $1
   | _ ->
       let loc =  mklocation (Parsing.rhs_start_pos 1) (Parsing.rhs_end_pos 2) in
       fail loc "Syntax error" 

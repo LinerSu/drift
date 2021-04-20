@@ -29,6 +29,14 @@ module SemanticsDomain =
       | Int v -> Int (AbstractValue.alpha_rename v prevar var)
       | Bool (vt, vf) -> Bool ((AbstractValue.alpha_rename vt prevar var), (AbstractValue.alpha_rename vf prevar var))
       | Unit _ -> a
+    let type_top_R (typ:inputType) = match typ with
+      | Int -> Int AbstractValue.top
+      | Bool -> (Bool (AbstractValue.top, AbstractValue.top))
+      | Unit -> Unit ()
+    let type_bot_R (typ:inputType) = match typ with
+      | Int -> Int AbstractValue.bot
+      | Bool -> (Bool (AbstractValue.bot, AbstractValue.bot))
+      | Unit -> Unit ()
     let top_R = function
       | Plus | Mult | Div | Mod | Modc | Minus -> (Int AbstractValue.top)
       | Ge | Eq | Ne | Lt | Gt | Le | And | Or -> (Bool (AbstractValue.top, AbstractValue.top))
@@ -187,6 +195,13 @@ module SemanticsDomain =
     let is_unit_R = function
       | Unit _ -> true
       | _ -> false
+    let construct_pred_R used_var l rexpr op = function
+      | Int v -> Int (AbstractValue.parse_cons used_var l rexpr op v)
+      | _ -> raise (Invalid_argument "Handle more predicate for boolean")
+    let constrcut_type_pred_R exp var_lst = function
+      | Int v -> Int (AbstractValue.cons_pred exp var_lst v)
+      | Bool (vt, vf) as a -> a (* TODO: Handle bool*)
+      | Unit u as a -> a
       (*
       ********************************
       ** Abstract domain for Values **
@@ -216,6 +231,8 @@ module SemanticsDomain =
         | Ary ary1, Ary ary2 -> Ary (join_Ary ary1 ary2)
         | Lst lst1, Lst lst2 -> Lst (join_Lst lst1 lst2)
         | Tuple u1, Tuple u2 -> Tuple (join_Tuple u1 u2)
+        | Variant var1, Variant var2 -> Variant (join_Variant var1 var2)
+        | Ref ref1, Ref ref2 -> Ref (join_Ref ref1 ref2)
         | _, _ -> Top
       and meet_V (v1:value_t) (v2:value_t) :value_t = match v1, v2 with
         | Top, v | v, Top -> v
@@ -224,6 +241,8 @@ module SemanticsDomain =
         | Ary ary1, Ary ary2 -> Ary (meet_Ary ary1 ary2)
         | Lst lst1, Lst lst2 -> Lst (meet_Lst lst1 lst2)
         | Tuple u1, Tuple u2 -> Tuple (meet_Tuple u1 u2)
+        | Variant var1, Variant var2 -> Variant (meet_Variant var1 var2)
+        | Ref ref1, Ref ref2 -> Ref (meet_Ref ref1 ref2)
         | _, _ -> Bot
       and leq_V (v1:value_t) (v2:value_t) :bool = match v1, v2 with
         | Bot, _ -> true
@@ -233,6 +252,8 @@ module SemanticsDomain =
         | Ary ary1, Ary ary2 -> leq_Ary ary1 ary2
         | Lst lst1, Lst lst2 -> leq_Lst lst1 lst2
         | Tuple u1, Tuple u2 -> leq_Tuple u1 u2
+        | Variant var1, Variant var2 -> leq_Variant var1 var2
+        | Ref ref1, Ref ref2 -> leq_Ref ref1 ref2
         | _, _ -> false
       and sat_leq_V (v1:value_t) (v2:value_t) :bool = match v1, v2 with
         | Bot, _ -> true
@@ -242,6 +263,8 @@ module SemanticsDomain =
         | Ary ary1, Ary ary2 -> leq_Ary ary1 ary2
         | Lst lst1, Lst lst2 -> sat_leq_Lst lst1 lst2
         | Tuple u1, Tuple u2 -> leq_Tuple u1 u2
+        | Variant var1, Variant var2 -> leq_Variant var1 var2
+        | Ref ref1, Ref ref2 -> leq_Ref ref1 ref2
         | _, _ -> false
       and eq_V (v1:value_t) (v2:value_t) :bool = match v1, v2 with
         | Bot, Bot -> true
@@ -251,6 +274,8 @@ module SemanticsDomain =
         | Ary ary1, Ary ary2 -> eq_Ary ary1 ary2
         | Lst lst1, Lst lst2 -> eq_Lst lst1 lst2
         | Tuple u1, Tuple u2 -> eq_Tuple u1 u2
+        | Variant var1, Variant var2 -> eq_Variant var1 var2
+        | Ref ref1, Ref ref2 -> eq_Ref ref1 ref2
         | _, _ -> false
       and is_table (v:value_t) = match v with
         | Table _ -> true
@@ -275,9 +300,14 @@ module SemanticsDomain =
             | Ary ary -> Ary (arrow_Ary var ary r2 None)
             | Lst lst -> Lst (arrow_Lst var lst (Relation r2) None)
             | Tuple u -> Tuple (arrow_Tuple var u v')
+            | Variant vart -> Variant (arrow_Variant var vart v')
+            | Ref ref -> Ref (arrow_Ref var ref v')
             | _ -> v)
         | Tuple u2 -> List.fold_left (fun v1 v2 ->
           arrow_V var v1 v2) v u2
+        | Variant vart2 -> let _, u = vart2 in
+          arrow_V var v (Tuple u) 
+        | Ref (v2, own2) -> arrow_V var v v2
         | Ary ary2 -> let (vars, (rl2, re2)) = ary2 in
           (match v with
           | Table t -> Table (arrow_T forget_V arrow_V var t v')
@@ -321,6 +351,8 @@ module SemanticsDomain =
         | Lst lst -> Lst (forget_Lst var lst)
         | Relation r -> Relation (forget_R var r)
         | Tuple u -> Tuple (forget_Tuple var u)
+        | Variant vart -> Variant (forget_Variant var vart)
+        | Ref ref -> Ref (forget_Ref var ref)
         | _ -> v
       and equal_V v var = match v with
         | Relation r -> Relation (equal_R r var)
@@ -332,6 +364,8 @@ module SemanticsDomain =
         | Ary ary1, Ary ary2 -> Ary (wid_Ary ary1 ary2)
         | Lst lst1, Lst lst2 -> Lst (wid_Lst lst1 lst2)
         | Tuple u1, Tuple u2 -> Tuple (wid_Tuple u1 u2)
+        | Variant var1, Variant var2 -> Variant (wid_Variant var1 var2)
+        | Ref ref1, Ref ref2 -> Ref (wid_Ref ref1 ref2)
         | _, _ -> join_V v1 v2
       and op_V sl sr op v = match v with
         | Bot | Top -> Top
@@ -356,6 +390,9 @@ module SemanticsDomain =
       | Relation r -> Relation (replace_R r var x)
       | Ary ary -> Ary (replace_Ary ary var x)
       | Lst lst -> Lst (replace_Lst lst var x)
+      | Tuple u -> Tuple (replace_Tuple u var x)
+      | Variant vart -> Variant (replace_Variant vart var x)
+      | Ref ref -> Ref (replace_Ref ref var x)
       | _ -> v
     and extrac_bool_V v b = match v with
       | Relation r -> Relation (extrac_bool_R r b)
@@ -368,6 +405,8 @@ module SemanticsDomain =
       | Lst lst, Relation rae -> Lst (stren_Lst lst rae)
       | Table t, Relation rae -> Table t (* Table (stren_T stren_V t ae) *)
       | Tuple u, Relation rae -> Tuple (stren_Tuple u ae)
+      | Variant var, Relation rae -> Variant (stren_Variant var ae)
+      | Ref ref, Relation rae -> Ref (stren_Ref ref ae)
       | Top, _ -> ae
       | _, Bot -> Bot
       | _, Top -> v
@@ -403,6 +442,8 @@ module SemanticsDomain =
       | Ary ary -> Ary (proj_Ary ary vars)
       | Lst lst -> Lst (proj_Lst lst vars)
       | Tuple u -> Tuple (proj_Tuple u vars)
+      | Variant var -> Variant (proj_Variant var vars)
+      | Ref ref -> Ref (proj_Ref ref vars)
       | _ -> v
     and get_len_var_V = function
       | Ary ary -> get_len_var_Ary ary
@@ -421,6 +462,9 @@ module SemanticsDomain =
       | Ary ary1, Ary ary2 -> eq_Ary ary1 ary2
       | Unit u1, Unit u2 -> true
       | _, _ -> false  *)
+    and get_relation_V = function
+      | Relation r -> r
+      | _ -> raise (Invalid_argument "expect relation type when extract value")
     and is_bool_bot_V = function
       | Relation r -> is_bool_bot_R r
       | _ -> true
@@ -490,6 +534,8 @@ module SemanticsDomain =
       | Lst lst -> Lst (bot_shape_Lst lst)
       | Ary ary -> Ary (bot_shape_Ary ary)
       | Tuple u -> Tuple (bot_shape_Tuple u)
+      | Variant var -> Variant (bot_shape_Variant var)
+      | Ref ref -> Ref (bot_shape_Ref ref)
     and add_tuple_item_V v v' = match v with
       | Tuple u -> Tuple (add_tuple_item_Tuple u v')
       | _ -> raise (Invalid_argument "Tuple constrct should be value, tuple")
@@ -505,6 +551,25 @@ module SemanticsDomain =
     and rename_lambda_V v = match v with
       | Lst lst -> Lst (rename_lambda_Lst lst)
       | _ -> v
+    and cons_Variant_val_V tag u = Variant (tag, u)
+    and is_Varaint_Bot_V = function
+      | Variant var -> is_Bot_Varaint var
+      | _ -> false
+    and extract_Variant_V = function
+      | Variant var -> extract_Variant var
+      | _ -> raise (Invalid_argument "extarct variant should be Variant type")
+    and cons_Ref_val_V v = Ref (v, 1.0)
+    and extract_Ref_V = function
+      | Ref (v, own) -> if own = 0.0 then Top (* no refinement information *)
+         else v
+      | _ -> raise (Invalid_argument "extarct reference should be Ref type")
+    and is_Ref_V = function
+      | Ref _ -> true
+      | _ -> false
+    and transfer_Ref_V action = function
+      | Ref ref1, Ref ref2 -> let ref1', ref2' = transfer_Ref action ref1 ref2 in
+        Ref ref1', Ref ref2'
+      | _, _ -> raise (Invalid_argument "transfer reference should be Ref type")
     (*
       *******************************
       ** Abstract domain for Array **
@@ -828,11 +893,13 @@ module SemanticsDomain =
       (vars, (rl, ve'))
     and bot_shape_Lst (vars, (rl, ve)) = 
       (vars, (rl, bot_shape_V ve))
+
     (*
       *******************************
       ** Abstract domain for Tuple **
       *******************************
     *)
+
     and join_Tuple u1 u2 =
       List.map2 (fun v1 v2 -> join_V v1 v2) u1 u2
     and meet_Tuple u1 u2 =
@@ -857,12 +924,164 @@ module SemanticsDomain =
       List.map (fun v -> bot_shape_V v) u
     and get_tuple_list u = 
       u
+    and replace_Tuple u var x =
+      List.map (fun v -> replace_V v var x) u
+    and is_Bot_Tuple u =
+      List.fold_left (fun ret v -> ret && is_Bot_V v) true u
 
+    (*
+      *********************************
+      ** Abstract domain for Variant **
+      *********************************
+    *)
+    and join_Variant var1 var2 = 
+      let (tag1, u1) = var1 in
+      let (tag2, u2) = var2 in
+      if tag1 = tag2 then
+        tag1, join_Tuple u1 u2
+      else var1 (* TODO: DEAD END *)
+    and meet_Variant var1 var2 = 
+      let (tag1, u1) = var1 in
+      let (tag2, u2) = var2 in
+      if tag1 = tag2 then
+        tag1, meet_Tuple u1 u2
+      else var1 (* TODO: DEAD END *)
+    and leq_Variant var1 var2 = 
+      let (tag1, u1) = var1 in
+      let (tag2, u2) = var2 in
+      if tag1 = tag2 then
+        leq_Tuple u1 u2
+      else false
+    and eq_Variant var1 var2 =
+      let (tag1, u1) = var1 in
+      let (tag2, u2) = var2 in
+      if tag1 = tag2 then
+        eq_Tuple u1 u2
+      else false
+    and wid_Variant var1 var2 =
+      let (tag1, u1) = var1 in
+      let (tag2, u2) = var2 in
+      if tag1 = tag2 then
+        tag1, wid_Tuple u1 u2
+      else var1 (* TODO: DEAD END *)
+    and arrow_Variant var vart v' =
+      let (tag, u) = vart in
+      tag, arrow_Tuple var u v'
+    and stren_Variant var ae = 
+      let (tag, u) = var in
+      tag, stren_Tuple u ae
+    and proj_Variant var vars = 
+      let (tag, u) = var in
+      tag, u
+    and forget_Variant var vart =
+      let (tag, u) = vart in
+      tag, forget_Tuple var u
+    and bot_shape_Variant var = 
+      let (tag, u) = var in
+      tag, bot_shape_Tuple u
+    and replace_Variant vart var x =
+      let (tag, u) = vart in
+      tag, replace_Tuple u var x
+    and is_Bot_Varaint (tag, u) = is_Bot_Tuple u
+    and extract_Variant (tag, u) = u
+    and construct_Variant_tuple (finder: int -> Syntax.type_ref_t) idx_lst te =
+      let super_pred = find_pred "" in
+      let super_ref_lst = VarMap.bindings super_pred in
+      let u: value_t list = if te = Top then (* Tag only *) [Top]
+       else (* with tuple *)
+       get_tuple_list_V te in
+      let ret = (List.init (List.length super_ref_lst) (fun i -> Bot)) in
+      List.fold_left (fun ret pos ->
+        let ref_map = finder pos in
+        let v = List.nth u pos in 
+        List.fold_left (fun lst (super_key, y) -> 
+        let v = 
+          let cons_v usey = 
+          let name_vary, dp_vary, _, predy = y in
+          let usey = usey && VarMap.mem name_vary ref_map in
+          let name_varx, dp_varx, type_ref, predx = 
+            if VarMap.mem name_vary ref_map then
+              VarMap.find name_vary ref_map 
+            else y
+          in
+          let built_type = string_to_type type_ref in
+          match predx with
+          | False -> Relation (type_bot_R built_type)
+          | True -> Relation (type_top_R built_type)
+          | Exp mt ->
+            let rec cons_val mt = match mt with
+            | Single t -> let exp, var_lst = term_to_str VarSet.empty t in
+              let org_r = if usey then join_V (alpha_rename_V v "cur_v" dp_vary) (alpha_rename_V v dp_varx dp_vary) |> get_relation_V else top_R Plus in
+              Relation (org_r |> constrcut_type_pred_R exp (VarSet.elements var_lst))
+            | Or (t, tmt) -> let vlst = cons_val tmt in
+              let exp, var_lst = term_to_str VarSet.empty t in
+              let org_r = if usey then alpha_rename_V v dp_varx dp_vary |> get_relation_V else top_R Plus in
+              let v = 
+                Relation (org_r |> constrcut_type_pred_R exp (VarSet.elements var_lst)) in 
+              join_V vlst v
+            | And (t, tmt) -> let vlst = cons_val tmt in
+              let exp, var_lst = term_to_str VarSet.empty t in
+              let org_r = if usey then alpha_rename_V v dp_varx dp_vary |> get_relation_V else top_R Plus in
+              let v = Relation (org_r |> constrcut_type_pred_R exp (VarSet.elements var_lst)) in
+              meet_V vlst v
+            in cons_val mt
+          in if v = Top then cons_v false else cons_v true
+        in v :: lst
+        ) [] super_ref_lst |> List.rev |> join_Tuple ret
+      ) ret idx_lst
+
+    (*
+      ***********************************
+      ** Abstract domain for Reference **
+      ***********************************
+    *)
+    and join_Ref ((v1, own1) as ref1) (v2, own2) = 
+      if own1 = own2 then
+        join_V v1 v2, own1
+      else ref1 (* TODO: if two ownership not equal, return what *)
+    and meet_Ref ((v1, own1) as ref1) (v2, own2) = 
+      if own1 = own2 then
+        meet_V v1 v2, own1
+      else ref1 (* TODO: if two ownership not equal, return what *)
+    and leq_Ref (v1, own1) (v2, own2) = 
+      if own1 = own2 then
+        leq_V v1 v2
+      else false
+    and eq_Ref (v1, own1) (v2, own2) = 
+      if own1 = own2 then
+        leq_V v1 v2
+      else false
+    and wid_Ref ((v1, own1) as ref1) (v2, own2) = 
+      if own1 = own2 then
+        wid_V v1 v2, own1
+      else ref1 (* TODO: if two ownership not equal, return what *)
+    and arrow_Ref var (v, own) v' =
+      arrow_V var v v', own
+    and stren_Ref (v, own) ae =
+      stren_V v ae, own
+    and proj_Ref (v, own) vars = 
+      proj_V v vars, own
+    and forget_Ref var (v, own) =
+      forget_V var v, own
+    and bot_shape_Ref (v, own) =
+      bot_shape_V v, own
+    and replace_Ref (v, own) var x =
+      replace_V v var x, own
+    and is_Bot_Ref (v, own) = is_Bot_V v
+    and deref_Ref (v, own) = v
+    and get_own_Ref (v, own) = own
+    and transfer_Ref action (v1, own1) (v2, own2) =
+      if action = "deref" then
+        (v1, 0.5), (v1, 0.5)
+      else (* alias *)
+        if eq_V v1 v2 then
+          (v1, 1.0), (v2, 0.0)
+        else (v1, 1.0), (v1, 0.0)
     (*
       ***************************************
       ** Abstract domain for Execution Map **
       ***************************************
-      *)
+    *)
     let meet_M (m1: exec_map_t) (m2: exec_map_t) : exec_map_t =
       NodeMap.merge (fun n v1 v2 -> Some (meet_V v1 v2)) m1 m2
     let join_M (m1: exec_map_t) (m2: exec_map_t) : exec_map_t =
@@ -1105,6 +1324,7 @@ module SemanticsDomain =
           m, env
         else 
           VarDefMap.fold (fun var (domain: pre_exp) (m, env) -> 
+            if contains var "pref" = false then m, env else
             let n_var = construct_vnode env var ("", "") in
             let s_var = construct_snode "" n_var in
             let t_var = match domain with
@@ -1129,5 +1349,26 @@ module SemanticsDomain =
             let m' = m |> NodeMap.add s_var t_var in
             m', env') !pre_vars (m, env)
       in env', m'
-
+    let construct_predef_pred pre_var var domain =
+      match domain with
+            | {name = n; dtype = Int; left = l; op = bop; right = r} -> 
+                let rm = if l = "true" then 
+                  (top_R Plus)
+                else if str_contains_arithop r then
+                  let r' = str_replace pre_var var r in
+                  top_R Plus |> construct_pred_R var l r' bop
+                else  
+                  top_R Plus |> op_R "" l r bop true
+                in Relation rm
+            | {name = n; dtype = Bool; left = l; op = bop; right = r} -> 
+                let rm = if l = "true" then init_R_c (Boolean true)
+                else if l = "false" then
+                  init_R_c (Boolean false)
+                else
+                  top_R Plus |> op_R "" l r bop true
+                in
+                Relation (rm)
+            | {name = n; dtype = Unit; left = l; op = _; right = r} ->
+                if l = "unit" then Tuple []
+                else raise (Invalid_argument"Expected unit predicate as {v: Unit | unit }")
   end

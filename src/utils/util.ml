@@ -44,6 +44,15 @@ module Opt = struct
   let map f = function
     | Some x -> Some (f x)
     | None -> None
+  
+  let map2 f ap bp = match ap, bp with
+    | Some a, Some b -> Some (f a b)
+    | None, None -> None
+    | _, _ -> raise (Invalid_argument "Opt.map2 should be used as same shape")
+
+  let unzip = function
+    | Some (a, b) -> Some a, Some b
+    | None -> None, None
 
   let flat_map f = function
     | Some x -> f x
@@ -155,3 +164,12 @@ let print_measures () =
       print_endline ("  " ^ id ^ ": " ^ (string_of_int calls) ^ " call(s), " ^ (string_of_float time) ^ " s")
     )
     measures
+
+let contains s1 s2 =
+  try
+    let len = String.length s2 in
+    for i = 0 to String.length s1 - len do
+      if String.sub s1 i len = s2 then raise Exit
+    done;
+    false
+  with Exit -> true

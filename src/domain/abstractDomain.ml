@@ -53,6 +53,14 @@ module type Domain =
       string ->
       string ->
       Syntax.binop -> int -> t -> t
+    val parse_cons :
+      string ->
+      string ->
+      string ->
+      Syntax.binop -> t -> t
+    val cons_pred:
+      string ->
+      string list -> t -> t
     val uoperator :
       string ->
       string ->
@@ -539,6 +547,39 @@ module BaseDomain(Manager : DomainManager) : Domain =
         end); *)
       Abstract1.minimize_environment man res
         (* res *)
+    
+    let cons_pred expr var_lst v = 
+      let env = Abstract1.env v in
+      let int_vars' = List.fold_right (fun var arry -> Array.append arry [|Var.of_string var|]) var_lst [||]
+      in
+      let env' = Environment.make int_vars' [||] in
+      let env'' = Environment.lce env env' in
+      let v' = Abstract1.change_environment man v env'' false in
+      let res = 
+        let tab = Parser.tcons1_of_lstring env'' [expr] in
+        Abstract1.meet_tcons_array man v' tab
+      in 
+      Abstract1.minimize_environment man res
+
+    let parse_cons used_var l rexpr op v = 
+      let vres = "cur_v" in
+      let var_v = vres |> Var.of_string in
+      let env = (match (make_var l, make_var used_var) with
+      | None, Some var_r -> Environment.make [|var_r|] [||]
+      | Some var_l, None -> Environment.make [|var_l;|] [||]
+      | Some var_l, Some var_r -> Environment.make [|var_l; var_r|] [||]
+      | None, None -> Environment.make [||] [||])
+      |> Environment.lce (Environment.make [|var_v|] [||]) in
+      let str_op = string_of_op op in
+      let env_v = Abstract1.env v in
+      let env' = Environment.lce env env_v in
+      let v' = Abstract1.change_environment man v env' false in
+      let res = 
+        let expr = vres ^ str_op ^ rexpr in
+        let tab = Parser.tcons1_of_lstring env [expr] in
+        Abstract1.meet_tcons_array man v' tab
+      in 
+      Abstract1.minimize_environment man res
 
     let operator x1 x2 x3 x4 x5 = measure_call "AbstractValue.operator" (operator x1 x2 x3 x4 x5)
     let uoperator vres ve op cons v =
@@ -669,6 +710,10 @@ module ProductDomain(D1 : Domain)(D2: Domain) : Domain =
       D1.operator vres vl vr op cons v1,
       D2.operator vres vl vr op cons v2
 
+    let parse_cons used_var l rexpr op (v1, v2) =
+      D1.parse_cons used_var l rexpr op v1,
+      D2.parse_cons used_var l rexpr op v2
+
     let uoperator vres ve op cons (v1, v2) =
       D1.uoperator vres ve op cons v1,
       D2.uoperator vres ve op cons v2
@@ -676,6 +721,10 @@ module ProductDomain(D1 : Domain)(D2: Domain) : Domain =
     let assign vres vl vr op (v1, v2) =
       D1.assign vres vl vr op v1,
       D2.assign vres vl vr op v2
+
+    let cons_pred exp var_lst (v1,v2)=
+      D1.cons_pred exp var_lst v1,
+      D2.cons_pred exp var_lst v2
 
     let print_abs ppf (v1, v2) =
       D1.print_abs ppf v1;

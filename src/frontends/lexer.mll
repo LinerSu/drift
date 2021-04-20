@@ -12,6 +12,7 @@ let _ =
       ("else", ELSE);
       ("end", END);
       ("false", BOOLCONST false);
+      ("False", BOOLPRED false);
       ("assert", ASSERT);
       ("fun", FUN);
       ("if", IF);
@@ -22,7 +23,13 @@ let _ =
       ("mod", MOD);
       ("rec", REC);
       ("then", THEN);
-      ("true", BOOLCONST true)])
+      ("type", TYPEKEY);
+      ("of", OF);
+      ("ref", REF);
+      ("and", ANDTK);
+      ("or", ORTK);
+      ("true", BOOLCONST true);
+      ("True", BOOLPRED true);])
 
 let lexical_error lexbuf msg =
   let pos = lexeme_start_p lexbuf in 
@@ -34,18 +41,25 @@ let lexical_error lexbuf msg =
 
 let white_space = [' ']*
 let basic_type = "int" | "bool" | "unit"
-let rm_type_sig = ([^')''(''=']|'('[^')''(''=''*']+')')* 
+let rm_type_sig = ([^')''(''=''*''[']|'('[^')''(''=''*']+')')* 
 let types = "int" rm_type_sig | "bool" rm_type_sig  | "unit" rm_type_sig | "(int->int)" rm_type_sig
 let digitchar = ['0'-'9']
 let idchar = ['A'-'Z''a'-'z''_']
+let capchar = ['A'-'Z']
+let uncapchar = ['a'-'z''_']
 let primechar = [''']
 let minus = ['-']
-let ident = idchar(idchar | digitchar)*('.'idchar)?(idchar | digitchar | primechar)* 
+let ident = (idchar | digitchar)*('.'idchar)?(idchar | digitchar | primechar)* 
 let digits = digitchar+
 let bool_str = "true" | "false" | "either"
 let bin_op_str =  ['>''<''='] | "<=" | ">=" | "<>" 
-let arth_op_str = ['+''-''*''/'] | "mod" | "&&" | "||" 
+let arth_op_str = ['+''-''*''/''%']
 let empty_list = "[" white_space "]"
+let cap_ident = capchar(idchar | digitchar)*
+let uncap_ident = uncapchar(ident | primechar)*
+let operand = ident | digits
+let tail_expr = arth_op_str white_space operand ')'? white_space
+let arith_expr = '('? white_space operand white_space ('('? tail_expr)*
 
 rule token = parse
   [' ' '\t'] { token lexbuf }
@@ -68,7 +82,28 @@ rule token = parse
   let vk = init_ref ("cur_"^ Char.escaped v) (string_to_type d) ("cur_"^Char.escaped l) bop r' in 
   PRE (vk) 
 }
+| "(*<:{"("v"as v)":"white_space("Unit"as d)white_space"|"white_space("unit" as t)white_space"}*)"  
+{
+  let vk = init_ref ("cur_"^ Char.escaped v) (string_to_type d) t "=" t in 
+  INVAR (vk)
+}
+| "(*<:{"("v"as v)":"white_space(("Bool"|"Int")as d)white_space"|"white_space(bool_str as t)white_space"}*)"  
+{ 
+  let vk = init_ref ("cur_"^ Char.escaped v) (string_to_type d) t "=" t in 
+  INVAR (vk) 
+}
+| "(*<:{"("v"as v)":"white_space(("Bool"|"Int")as d)white_space"|"white_space("v" as l)white_space(bin_op_str as bop)white_space((ident|digits) as r)white_space"}*)"  
+{ 
+  let vk = init_ref ("cur_"^ Char.escaped v) (string_to_type d) ("cur_"^Char.escaped l) bop r in 
+  INVAR (vk) 
+}
+| "(*<:{"("v"as v)":"white_space(("Bool"|"Int")as d)white_space"|"white_space("v" as l)white_space(bin_op_str as bop)white_space(arith_expr as ep)white_space"}*)"  
+{ 
+  let vk = init_ref ("cur_"^ Char.escaped v) (string_to_type d) ("cur_"^Char.escaped l) bop ep in 
+  INVAR (vk) 
+}
 | ":"  { COLON }
+| "!"  { EXCLAM }
 | ","  { COMMA }
 | ";"  { SEMI }
 | "->" { ARROW }
@@ -86,18 +121,31 @@ rule token = parse
 | "]" { RSQBR }
 | "[|" { LARYBR }
 | "|]" { RARYBR }
+| "{" { LBRKT }
+| "}" { RBRKT }
 | '+' { PLUS }
 | '-' { MINUS }
 | '/' { DIV }
-| types {TYPE}
-| '*' { TIMES }
-| '(' { LPAREN }
-| ')' { RPAREN }
-| ident as kw
+| types as kw
     { try
       Hashtbl.find keyword_table kw
     with Not_found ->
-      IDENT (kw)
+      TYPE (kw)
+    }
+| "*" { TIMES }
+| "(" { LPAREN }
+| ")" { RPAREN }
+| cap_ident as kw
+    { try
+      Hashtbl.find keyword_table kw
+    with Not_found ->
+      CAPIDENT (kw)
+    }
+| uncap_ident as kw
+    { try
+      Hashtbl.find keyword_table kw
+    with Not_found ->
+      UNCAPIDENT (kw)
     }
 | empty_list { EMPTYLST }
 | digits as num { INTCONST (int_of_string num) }

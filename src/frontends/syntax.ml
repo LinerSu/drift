@@ -114,6 +114,11 @@ let op_of_string = function
   |  ";" -> Seq (* ; *)
   | s -> raise (Invalid_argument (s^": Invalid operator inside pre-defined var"))
 
+let str_contains_arithop s =
+  if String.contains s '+' || String.contains s '-' 
+    || String.contains s '*' || String.contains s '/' || String.contains s '%' then 
+  true else false
+
 let unop_of_string = function
   | "-" -> UMinus
   | "not" -> Not
@@ -144,15 +149,18 @@ let type_to_string = function
 
 (** Terms *)
 type term =
-  | TupleLst of term list * loc         (* tuple list *)
-  | Const of value * loc               (* i (int constant) *)
-  | Var of var * loc                   (* x (variable) *)
-  | App of term * term * loc           (* t1 t2 (function application) *)
-  | UnOp of unop * term * loc          (* uop t (unary operator) *)
-  | BinOp of binop * term * term * loc (* t1 bop t2 (binary infix operator) *)
-  | PatMat of term * patcase list * loc     (* match t1 with t2 -> t3 | ... *)
+  | TupleLst of term list * loc               (* tuple list *)
+  | Const of value * loc                      (* i (int constant) *)
+  | Var of var * loc                          (* x (variable) *)
+  | App of term * term * loc                  (* t1 t2 (function application) *)
+  | UnOp of unop * term * loc                 (* uop t (unary operator) *)
+  | BinOp of binop * term * term * loc        (* t1 bop t2 (binary infix operator) *)
+  | PatMat of term * patcase list * loc       (* match t1 with t2 -> t3 | ... *)
   | Ite of term * term * term * loc * asst    (* if t1 then t2 else t3 (conditional) *)
   | Rec of (var * loc) option * (var * loc) * term * loc (*lambda and recursive function*)
+  | DataTyp of var * var * term option * loc  (* Tag (t) (poly type spec)*)
+  | Ptr of term * loc                         (* ptrx (pointer) *)
+  | DeRef of term * loc                       (* !ptrx (dereference) *)
 and patcase = 
   | Case of term * term
 
@@ -160,12 +168,15 @@ let loc = function
   | TupleLst (_, l)
   | Const (_, l)
   | Var (_, l)
+  | Ptr (_, l)
+  | DeRef (_, l)
   | App (_, _, l)
   | BinOp (_, _, _, l)
   | UnOp (_, _, l)
   | Ite (_, _, _, l, _)
   | PatMat (_, _, l)
-  | Rec (_, _, _, l) -> l
+  | Rec (_, _, _, l)
+  | DataTyp (_, _, _, l) -> l
 
 let cond_op = function
   | Plus | Mult | Div | Mod | Modc | Minus | And | Or | Cons | Seq -> false
@@ -194,6 +205,10 @@ let is_var_x x = function
 let is_func = function
   | Rec _ -> true
   | _ -> false
+
+let get_func_var = function
+  | Rec (_, (x, _), _, _) -> x
+  | _ -> raise (Invalid_argument ("Expected func to get var."))
 
 let is_tuple = function
   | TupleLst _ -> true
@@ -244,6 +259,11 @@ let rev_op = function
   | Gt -> Le
   | op -> op
 
+let is_conjunc_op = function
+  | And -> true
+  | Or -> false
+  | _ -> raise (Invalid_argument ("Type predicate accepts 'and' 'or' only!"))
+
 let label e =
     let rec l k = function
       | TupleLst (e, _) ->
@@ -284,6 +304,18 @@ let label e =
         let e1', k1 = l k e1 in
         let e2', k2 = l k1 e2 in
         BinOp (bop, e1', e2', string_of_int k2), k2 + 1
+      | DataTyp (name, tag, ep, _) ->
+        (match ep with
+        | Some e -> 
+          let e', k' = l k e in
+          DataTyp (name, tag, Some e', string_of_int k'), k' + 1
+        | None -> DataTyp (name, tag, ep, string_of_int k), k + 1)
+      | Ptr (e, _) ->
+        let e', k' = l k e in
+        Ptr (e', string_of_int k'), k' + 1
+      | DeRef (e, _) ->
+        let e', k' = l k e in
+        DeRef (e', string_of_int k'), k' + 1
     and lp k = function
       | [] -> [], k
       | Case (e1, e2) :: tl -> 
@@ -335,6 +367,12 @@ let fv_acc acc e =
     | Rec (f_opt, (x, _), e, _) ->
         let d = StringSet.of_list (x :: (f_opt |> Opt.map fst |> Opt.to_list)) in
         fv (StringSet.union bvs d) acc e
+    | DataTyp (name, tag, ep, l) ->
+      (match ep with
+      | Some e -> fv bvs acc e
+      | None -> acc)
+    | Ptr (e, _) -> fv bvs acc e
+    | DeRef (e, _) -> fv bvs acc e
   in
   fv StringSet.empty acc e
 
@@ -363,6 +401,12 @@ let fo e =
     | Rec (f_opt, (x, _), e, _) ->
         let bvs1 = List.fold_left inc bvs (x :: (f_opt |> Opt.map fst |> Opt.to_list)) in
         fv bvs1 acc e
+    | DataTyp (name, tag, ep, l) ->
+      (match ep with
+      | Some e -> fv bvs acc e
+      | None -> acc)
+    | Ptr (e, _) -> fv bvs acc e
+    | DeRef (e, _) -> fv bvs acc e
   in
   fv StringMap.empty StringMap.empty e
     
@@ -468,35 +512,41 @@ let subst sm =
       | Const _ as e -> e
       | Var (y, _) as v ->
           StringMap.find_opt y sm |> Opt.get_or_else v
-        | App (e1, e2, l) ->
-            App (s e1, s e2, l)
-        | BinOp (bop, e1, e2, l) ->
-            BinOp (bop, s e1, s e2, l)
-        | UnOp (uop, e, l) ->
-            UnOp (uop, s e, l)
-        | TupleLst (ts, l) ->
-            TupleLst (List.map s ts, l)
-        | Ite (b, t, e, l, a) ->
-            Ite (s b, s t, s e, l, a)
-        | Rec (f_opt, y, e, l) as r ->
-            let bvs = fst y :: (f_opt |> Opt.map fst |> Opt.to_list) |> StringSet.of_list in
-            let sm1 = update_sm bvs sm in
-            if sm1 = StringMap.empty then r else
-            let f_opt1 = f_opt |> Opt.map (subst_bv sm1) in
-            let y1 = subst_bv sm1 y in
-            let e1 = subst sm1 e in
-            Rec (f_opt1, y1, e1, l)
-        | PatMat (t, ps, l) ->
-            let ps1 =
-              List.map (function Case (p, t) as c ->
-                let sm1 = update_sm (fv p) sm in
-                if sm1 = StringMap.empty then c else
-                let p1 = subst sm1 p in
-                let t1 = subst sm1 t in
-                Case (p1, t1))
-                ps
-            in
-            PatMat (s t, ps1, l)
+      | App (e1, e2, l) ->
+          App (s e1, s e2, l)
+      | BinOp (bop, e1, e2, l) ->
+          BinOp (bop, s e1, s e2, l)
+      | UnOp (uop, e, l) ->
+          UnOp (uop, s e, l)
+      | TupleLst (ts, l) ->
+          TupleLst (List.map s ts, l)
+      | Ite (b, t, e, l, a) ->
+          Ite (s b, s t, s e, l, a)
+      | Rec (f_opt, y, e, l) as r ->
+          let bvs = fst y :: (f_opt |> Opt.map fst |> Opt.to_list) |> StringSet.of_list in
+          let sm1 = update_sm bvs sm in
+          if sm1 = StringMap.empty then r else
+          let f_opt1 = f_opt |> Opt.map (subst_bv sm1) in
+          let y1 = subst_bv sm1 y in
+          let e1 = subst sm1 e in
+          Rec (f_opt1, y1, e1, l)
+      | PatMat (t, ps, l) ->
+          let ps1 =
+            List.map (function Case (p, t) as c ->
+              let sm1 = update_sm (fv p) sm in
+              if sm1 = StringMap.empty then c else
+              let p1 = subst sm1 p in
+              let t1 = subst sm1 t in
+              Case (p1, t1))
+              ps
+          in
+          PatMat (s t, ps1, l)
+      | DataTyp (name, tag, ep, l) ->
+        (match ep with
+        | Some e -> DataTyp (name, tag, Some (s e), l)
+        | None -> e)
+      | Ptr (e, l) -> Ptr (s e, l)
+      | DeRef (e, l) -> DeRef (s e, l)
   in subst sm
     
 let simplify =
@@ -506,7 +556,7 @@ let simplify =
     Opt.get_or_else 0
   in
   let rec simp = function
-  | (Var _ | Const _) as e -> e
+  | (Var _ | Const _ ) as e -> e
   | App (e1, e2, l) ->
       (match simp e1, simp e2 with
       | Rec (None, (x, _), e, _), (Const _ | Var _ as c) ->
@@ -532,4 +582,116 @@ let simplify =
       PatMat (simp e1, ps', l)
   | Ite (b, t, e, l, a) ->
       Ite (simp b, simp t, simp e, l, a)
+  | DataTyp (name, tag, ep, l) as e ->
+    (match ep with
+    | Some e -> DataTyp (name, tag, Some (simp e), l)
+    | None -> e)
+  | Ptr (e, l) -> Ptr (simp e, l)
+  | DeRef (e, l) -> DeRef (simp e, l)
   in simp
+
+type type_name_t = var
+
+(* type refinment *)
+exception Key_not_found of string
+module TempVarMap =  Map.Make(struct
+  type t = var
+  let compare = compare
+  end)
+
+module VarMap = struct
+  include TempVarMap
+  let find key m = try TempVarMap.find key m 
+    with Not_found -> raise (Key_not_found (key^" is not Found in VarMap"))
+end
+
+module MyVar = struct 
+   type t = var 
+   (* use Pervasives compare *)
+   let compare = compare
+ end
+
+module VarSet = Set.Make(MyVar)
+
+type multi_term = Single of term | Or of term * multi_term | And of term * multi_term
+
+(* dp = ldp + 1 or dp = rdp + 1 | true | false *)
+type pred_exp_t = Exp of multi_term | False | True
+(* depth: {dp: type | predicate } *)
+type ref_pred_t = (var * var * var * pred_exp_t) VarMap.t
+(* {v:bstree | refinement predicate} *)
+type type_ref_t = ref_pred_t
+
+type option_ref_t = Nothing of type_ref_t | Just of (type_name_t * type_ref_t) list
+
+type datatype_t = var * type_ref_t * (var * option_ref_t) list
+
+let parsed_dt: datatype_t ref = ref ("", VarMap.empty, [])
+
+let str_replace input output =
+    Str.global_replace (Str.regexp_string input) output
+
+let exist_ref_option = function
+  | Nothing _ -> false
+  | Just _ -> true
+
+let find_dtname_by_tag str = 
+  let (dt_name, _, lst) = !parsed_dt in
+  let rec find_tag_s = function
+    | [] -> raise (Not_found)
+    | [tag, spec] -> if tag = str then dt_name, exist_ref_option spec else raise (Not_found)
+    | (tag, spec) :: l -> if tag = str then dt_name, exist_ref_option spec else find_tag_s l
+  in find_tag_s lst
+
+let find_pred_by_pos pos lst = 
+  let typ, pred = List.nth lst pos in pred
+
+let find_pred_on_spec tag pos = function
+  | Nothing pred -> pred
+  | Just pred_lst -> find_pred_by_pos pos pred_lst
+
+let rec find_pred_on_lst tag pos = function
+  | [] -> raise (Key_not_found (tag^" is not found in datatype"))
+  | (tag', spec) :: l -> if tag = tag' then find_pred_on_spec tag pos spec
+    else find_pred_on_lst tag pos l
+
+let find_pred_by_tag name tag pos = 
+  let n, _, lst = !parsed_dt in 
+  if name = n then find_pred_on_lst tag pos lst
+  else raise (Key_not_found (name^" is not defined any predicate"))
+
+let find_pred name = 
+  let _, pred, _ = !parsed_dt in pred
+
+let get_spec_length_lst = function
+  | Nothing pred -> 1
+  | Just pred_lst -> List.length pred_lst
+
+let rec get_tag_spec tag = function
+  | [] -> raise (Key_not_found (tag^" is not found in datatype"))
+  | (tag', spec) :: l -> if tag = tag' then get_spec_length_lst spec
+    else get_tag_spec tag l
+
+let get_pred_taglst name tag = 
+  let n, _, lst = !parsed_dt in 
+  if name = n then get_tag_spec tag lst
+  else raise (Key_not_found (name^" is not defined any predicate"))
+
+let get_var_dep pos = 
+  let n, pred, lst = !parsed_dt in 
+  let pred_list = VarMap.bindings pred in
+  let pred = List.nth pred_list pos |> snd in
+  let name, dp, _, _ = pred in name, dp
+
+let rec term_to_str var_lst = function
+| Const (c, l) ->
+    str_of_val c, var_lst
+| Var (x, l) -> 
+    let var_lst' = VarSet.add x var_lst in
+    x, var_lst'
+| BinOp (bop, e1, e2, l) -> 
+  let e', l1 = term_to_str var_lst e1 in
+  let e'' = e' ^ (string_of_op bop) in
+  let e''', l2 = term_to_str l1 e2 in
+  e'' ^ e''', l2
+| _ -> raise (Invalid_argument "Unhandle parse undefined term")
